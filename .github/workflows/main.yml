@@ -1,0 +1,94 @@
+name: Deploy & Integration Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+  schedule:
+    - cron: "0 */5 * * *"
+
+concurrency:
+  group: deploy-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy Bot
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg imagemagick
+
+      - name: Install Project Dependencies
+        run: |
+          npm install
+          npm install --no-save @distube/ytdl-core@latest
+
+      - name: Deploy & Start Bot
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          GEMINI_KEY_1: ${{ secrets.GEMINI_KEY_1 }}
+          GEMINI_KEY_2: ${{ secrets.GEMINI_KEY_2 }}
+          GEMINI_KEY_3: ${{ secrets.GEMINI_KEY_3 }}
+          GEMINI_KEY_4: ${{ secrets.GEMINI_KEY_4 }}
+          GEMINI_KEY_5: ${{ secrets.GEMINI_KEY_5 }}
+          GEMINI_KEY_6: ${{ secrets.GEMINI_KEY_6 }}
+          # ── අලුතෙන් එකතු කරපු Google OAuth Secrets ──
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        run: |
+          npm install -g concurrently ngrok
+          ngrok config add-authtoken $NGROK_AUTHTOKEN
+          concurrently \
+            --names "app,tunnel" \
+            --prefix-colors "blue,green" \
+            "npm start" \
+            "ngrok http --url=confound-unbraided-endowment.ngrok-free.dev 3000"
+
+      - name: Schedule next cycle
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          QUEUED=$(curl -s \
+            -H "Authorization: token $GH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=5" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_count', 0))")
+
+          if [ "$QUEUED" -eq "0" ]; then
+            curl -s -X POST \
+              -H "Authorization: token $GH_PAT" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/actions/workflows/deploy-pipeline.yml/dispatches" \
+              -d '{"ref":"main"}'
+            echo "Next cycle scheduled"
+          else
+            echo "Run already queued, skipping dispatch"
+          fi
+
+      - name: Post-deploy summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
