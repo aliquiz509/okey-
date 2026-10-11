@@ -38,6 +38,7 @@ jobs:
       - name: Install Project Dependencies
         run: |
           npm install
+          npm install --no-save @distube/ytdl-core@latest
 
       - name: Deploy & Start Bot
         env:
