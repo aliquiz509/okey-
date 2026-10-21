@@ -683,18 +683,29 @@ async function Pair(number, res = null) {
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
                 const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+                // 440 means this WhatsApp session was replaced by another connection.
+                // Reconnecting immediately with the same credentials can create an endless 440 loop.
+                const isConnectionReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
                 console.log(`Disconnected: ${sessionId} | Code: ${statusCode}`);
-                
+
                 cleanupSession(sessionId, sessionPath);
-                
-                if (!isLoggedOut) {
+
+                if (isConnectionReplaced) {
+                    delete reconnectAttempts[sessionId];
+                    if (reconnectTimers[sessionId]) clearTimeout(reconnectTimers[sessionId]);
+                    delete reconnectTimers[sessionId];
+                    console.error(`⚠️ Session ${sessionId} was replaced (440). Ensure this WhatsApp session is running on only ONE Render service/deployment, then use the panel's force-reconnect option.`);
+                } else if (!isLoggedOut) {
                     const attempt = (reconnectAttempts[sessionId] || 0) + 1;
                     reconnectAttempts[sessionId] = attempt;
                     const delay = Math.min(8000 * Math.pow(2, attempt - 1), MAX_RECONNECT_DELAY);
 
                     console.log(`Reconnecting: ${sessionId} (attempt ${attempt}, in ${delay}ms)`);
                     if (reconnectTimers[sessionId]) clearTimeout(reconnectTimers[sessionId]);
-                    reconnectTimers[sessionId] = setTimeout(() => Pair(number), delay);
+                    reconnectTimers[sessionId] = setTimeout(() => {
+                        delete reconnectTimers[sessionId];
+                        if (!permanentlyDeletedSessions.has(sessionId) && !activeSockets[sessionId]) Pair(number);
+                    }, delay);
                 } else {
                     console.log('Logged out:', sessionId);
                     delete reconnectAttempts[sessionId];
@@ -751,15 +762,15 @@ async function Pair(number, res = null) {
                             const channelMeta = await sock.newsletterMetadata('jid', channelJid).catch(() => null);
                             const alreadyFollowing = channelMeta?.viewerMeta?.role === 'SUBSCRIBER';
                             if (!alreadyFollowing) {
-                                if (sock.newsletterFollow) {
-                                    await sock.newsletterFollow(channelJid);
-                                } else {
-                                    await sock.query({
-                                        tag: 'iq',
-                                        attrs: { to: '@s.whatsapp.net', type: 'set', xmlns: 'newsletter' },
-                                        content: [{ tag: 'follow', attrs: { newsletter_jid: channelJid } }]
-                                    });
+                                if (typeof sock.newsletterFollow !== 'function') {
+                                    console.log(`ℹ️ Auto-Follow skipped for ${channelJid}: this Baileys build does not expose newsletterFollow()`);
+                                    continue;
                                 }
+                                if (sock.ws?.readyState !== 1) {
+                                    console.log(`ℹ️ Auto-Follow skipped for ${channelJid}: WhatsApp socket is not open`);
+                                    continue;
+                                }
+                                await sock.newsletterFollow(channelJid);
                                 console.log(`✅ Auto-Followed Channel: ${channelJid}`);
                             }
                         } catch (err) {
